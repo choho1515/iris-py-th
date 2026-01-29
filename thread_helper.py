@@ -3,8 +3,18 @@ import re
 import requests
 from functools import wraps
 from typing import Optional, List, Dict, Any, Union
+
 from iris import ChatContext
 from iris.bot.models import Message, Room, User
+from iris.bot._internal.iris import IrisAPI
+
+def _silent_parse(self, res):
+    try: data = res.json()
+    except: data = {}
+    if not 200 <= res.status_code <= 299:
+        raise Exception(f"Iris 오류: {data.get('message', '알 수 없는 오류')}")
+    return data
+IrisAPI._IrisAPI__parse = _silent_parse
 
 def _get_user_enc(chat_api_wrapper, user_id: int):
     if not user_id: return None
