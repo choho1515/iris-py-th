@@ -3,12 +3,8 @@ import re
 import requests
 from functools import wraps
 from typing import Optional, List, Dict, Any, Union
-
 from iris import ChatContext
 from iris.bot.models import Message, Room, User
-
-
-
 
 def _get_user_enc(chat_api_wrapper, user_id: int):
     if not user_id: return None
@@ -17,7 +13,6 @@ def _get_user_enc(chat_api_wrapper, user_id: int):
         if result: return int(result[0].get("enc", 0))
     except: pass
     return None
-
 
 def _decrypt_cached(api_wrapper, enc: int, text: str, user_id: int):
     if not text or not enc: return None
