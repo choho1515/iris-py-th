@@ -369,6 +369,8 @@ def get_thread_timeline(chat: ChatContext, limit: int = 50) -> List[Dict[str, An
     messages = [source] + get_thread_messages(chat, source.message.id, limit=limit)
     return [{
         "name": m.sender.name, 
+        "id": m.sender.id,
+        "msgId": m.message.id,
         "content": m.message.msg,
         "time": int(m.raw.get("created_at") or 0)
     } for m in messages]
