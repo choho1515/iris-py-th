@@ -374,13 +374,10 @@ class Thread:
         """답장 대상 추정"""
         return estimate_reply_target(self._chat)
 
-    def send(self, message: str) -> bool:
-        """이 스레드(타래)에 즉시 답장 전송"""
-        return send_to_thread(self._chat, message, thread_id=self.id)
-
-    def reply(self, message: str) -> bool:
-        """이 스레드(타래)에 답장 전송 (send와 동일)"""
-        return self.send(message)
+    def send(self, message: str, target_id: Union[str, int] = None) -> bool:
+        """이 스레드(타래) 또는 특정 메시지에 답장 전송"""
+        tid = target_id if target_id else self.id
+        return send_to_thread(self._chat, message, thread_id=tid)
 
     def isOpenChannel(self) -> bool:
         return True
@@ -404,10 +401,6 @@ def is_thread_reply(func):
         chat.reply("메시지에 답장하여 요청하세요.")
         return None
     return wrapper
-
-def open_thread(chat: ChatContext, target_msg_id: Union[str, int], message: str) -> bool:
-    """명시적으로 스레드를 열어서 전송"""
-    return send_to_thread(chat, message, thread_id=target_msg_id)
 
 def get_thread_context(chat: ChatContext, limit: int = 5) -> List[ChatContext]:
     """전역 함수 형태의 대화 흐름 조회"""
