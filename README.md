@@ -11,7 +11,7 @@
 ### 원본 데이터 접근 (Getter)
 | 속성 경로 | 설명 | 비고 |
 |:---|:---|:---|
-| `chat.thread.sender.name` | 스레드 원본 작성자의 닉네임 | 가장 많이 사용됨 |
+| `chat.thread.sender.name` | 스레드 원본 작성자의 닉네임 | |
 | `chat.thread.message.msg` | 스레드 원본 메시지의 텍스트 내용 | |
 | `chat.thread.id` | 스레드 원본 메시지 ID (숫자) | 일반 메시지일 경우 `None` |
 | `chat.thread.exists` | 현재 메시지가 스레드에 속해 있는지 여부 | `True` / `False` |
