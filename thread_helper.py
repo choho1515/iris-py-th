@@ -1,15 +1,47 @@
 import json
 import re
+import time
+import sys
 import requests
 from functools import wraps
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Set
 
 from iris import ChatContext
 from iris.bot.models import Message, Room, User
 from iris.bot._internal.iris import IrisAPI
 
+_GLOBAL_SESSION = requests.Session()
+
+class SimpleTTLCache:
+    def __init__(self, max_size=2000, ttl=300):
+        self.cache = {}
+        self.max_size = max_size
+        self.ttl = ttl
+
+    def get(self, key):
+        if key in self.cache:
+            value, expire_time = self.cache[key]
+            if time.time() < expire_time:
+                return value
+            del self.cache[key]
+        return None
+
+    def set(self, key, value):
+        if len(self.cache) >= self.max_size:
+            overflow = int(self.max_size * 0.2)
+            for _ in range(overflow):
+                try:
+                    self.cache.pop(next(iter(self.cache)))
+                except: break
+        self.cache[key] = (value, time.time() + self.ttl)
+
+_USER_INFO_CACHE = SimpleTTLCache(max_size=2000, ttl=300)
+_DECRYPT_CACHE = SimpleTTLCache(max_size=5000, ttl=600)
+
+MENTION_PATTERN = re.compile(r"@(\S+)")
+
 def _silent_parse(self, res):
-    """Iris API 응답 파싱 및 에러 처리 (Monkeypatch)"""
+    """Iris API 응답 파싱 및 에러 처리"""
     try: data = res.json()
     except: data = {}
     if not 200 <= res.status_code <= 299:
@@ -21,6 +53,9 @@ IrisAPI._IrisAPI__parse = _silent_parse
 def _get_user_enc(chat_api_wrapper, user_id: int):
     """유저의 암호화 키(enc) 조회"""
     if not user_id: return None
+    cached = _USER_INFO_CACHE.get(user_id)
+    if cached: return cached.get("enc")
+
     try:
         result = chat_api_wrapper.query("SELECT enc FROM db2.open_chat_member WHERE user_id = ? LIMIT 1", [user_id])
         if result: return int(result[0].get("enc", 0))
@@ -30,15 +65,26 @@ def _get_user_enc(chat_api_wrapper, user_id: int):
 def _decrypt_cached(api_wrapper, enc: int, text: str, user_id: int):
     """캐시된 키를 이용한 텍스트 복호화"""
     if not text or not enc: return None
-    try: return api_wrapper.decrypt(enc, text, user_id)
+    
+    cache_key = (enc, text, user_id)
+    cached_result = _DECRYPT_CACHE.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
+    try: 
+        decrypted = api_wrapper.decrypt(enc, text, user_id)
+        if decrypted:
+            _DECRYPT_CACHE.set(cache_key, decrypted)
+        return decrypted
     except: return None
 
 def _decrypt_supplement(chat: ChatContext, supplement: str, user_id: int):
-    """추가 정보(supplement) 복호화 및 파싱"""
+    """supplement 복호화 및 파싱"""
     if not supplement: return None
     if supplement.startswith("{"):
         try: return json.loads(supplement)
         except: return None
+    
     enc = _get_user_enc(chat.api, user_id)
     if not enc: return None
     try:
@@ -47,8 +93,60 @@ def _decrypt_supplement(chat: ChatContext, supplement: str, user_id: int):
     except: pass
     return None
 
+def _fetch_users_batch(api_wrapper, user_ids: Set[int]) -> Dict[int, Dict[str, Any]]:
+    if not user_ids: return {}
+    
+    result_map = {}
+    missing_ids = []
+
+    for uid in user_ids:
+        cached_data = _USER_INFO_CACHE.get(uid)
+        if cached_data:
+            result_map[uid] = cached_data
+        else:
+            missing_ids.append(uid)
+    
+    if not missing_ids: return result_map
+
+    try:
+        placeholders = ', '.join(['?'] * len(missing_ids))
+        query_chat = f"SELECT user_id, nickname, enc FROM db2.open_chat_member WHERE user_id IN ({placeholders})"
+        result_chat = api_wrapper.query(query_chat, missing_ids)
+        
+        found_ids = set()
+        for r in result_chat:
+            uid = int(r.get("user_id"))
+            name = r.get("nickname")
+            if name: name = sys.intern(name)
+            
+            data = {"name": name, "enc": int(r.get("enc", 0))}
+            result_map[uid] = data
+            _USER_INFO_CACHE.set(uid, data)
+            found_ids.add(uid)
+            
+        still_missing = [uid for uid in missing_ids if uid not in found_ids]
+        if still_missing:
+            placeholders_missing = ', '.join(['?'] * len(still_missing))
+            query_friends = f"SELECT id, name, enc FROM db2.friends WHERE id IN ({placeholders_missing})"
+            result_friends = api_wrapper.query(query_friends, still_missing)
+            
+            for r in result_friends:
+                uid = int(r.get("id"))
+                name = r.get("name")
+                if name: name = sys.intern(name)
+                
+                data = {"name": name, "enc": int(r.get("enc", 0))}
+                result_map[uid] = data
+                _USER_INFO_CACHE.set(uid, data)
+                
+    except: pass
+    return result_map
+
 def _get_user_name_cached(api_wrapper, user_id: int):
     """DB에서 유저 닉네임과 암호화 키 정보 조회"""
+    cached = _USER_INFO_CACHE.get(user_id)
+    if cached: return cached
+
     try:
         query = """
             WITH info AS (SELECT ? AS user_id) 
@@ -61,12 +159,14 @@ def _get_user_name_cached(api_wrapper, user_id: int):
         """
         result = api_wrapper.query(query, [user_id])
         if result and result[0]:
-            return {"name": result[0].get("name"), "enc": result[0].get("enc")}
+            data = {"name": result[0].get("name"), "enc": result[0].get("enc")}
+            _USER_INFO_CACHE.set(user_id, data)
+            return data
     except: pass
     return None
 
 def _get_user_name(chat: ChatContext, user_id: int):
-    """유저의 최종 닉네임 조회 (복호화 포함)"""
+    """유저의 닉네임 조회"""
     try:
         info = _get_user_name_cached(chat.api, user_id)
         if not info: return None
@@ -80,7 +180,7 @@ def _get_user_name(chat: ChatContext, user_id: int):
         return name
     except: return None
 
-def _make_chat_from_record(chat: ChatContext, record: dict):
+def _make_chat_from_record(chat: ChatContext, record: dict, user_cache: Dict[int, Any] = None):
     """DB 레코드를 ChatContext 객체로 변환"""
     try:
         v = {}
@@ -88,9 +188,28 @@ def _make_chat_from_record(chat: ChatContext, record: dict):
         except: pass
         room = Room(id=int(record["chat_id"]), name=chat.room.name, api=chat.api)
         user_id = int(record["user_id"])
-        sender = User(id=user_id, chat_id=int(record["chat_id"]), api=chat.api, name=_get_user_name(chat, user_id), bot_id=chat._bot_id)
+        
+        user_info = user_cache.get(user_id) if user_cache else None
+        
+        if not user_info:
+            user_info = _USER_INFO_CACHE.get(user_id)
+
+        if user_info:
+            raw_name = user_info.get("name")
+            enc = user_info.get("enc")
+            sender_name = raw_name
+            if enc and raw_name and not any(c in raw_name for c in ['가', '나', '다', ' ']):
+                try:
+                    decrypted = _decrypt_cached(chat.api, int(enc), raw_name, user_id)
+                    if decrypted: sender_name = decrypted
+                except: pass
+        else:
+            sender_name = _get_user_name(chat, user_id)
+            enc = _get_user_enc(chat.api, user_id)
+
+        sender = User(id=user_id, chat_id=int(record["chat_id"]), api=chat.api, name=sender_name, bot_id=chat._bot_id)
         message_text, attachment = record.get("message", ""), record.get("attachment", "")
-        enc = _get_user_enc(chat.api, user_id)
+        
         if enc:
             if message_text and not message_text.startswith("{"):
                 try:
@@ -129,21 +248,36 @@ def get_thread_source(chat: ChatContext) -> Optional[ChatContext]:
     return None
 
 def get_thread_messages(chat: ChatContext, source_message_id: int, limit: int = 50) -> List[ChatContext]:
-    """특정 원본에 달린 답장 리스트 조회"""
+    """특정 원본에 달린 답장 리스트 조회 (최적화됨)"""
     try:
         result = chat.api.query("SELECT * FROM chat_logs WHERE chat_id = ? AND id > ? AND supplement IS NOT NULL ORDER BY id ASC LIMIT ?", [chat.room.id, source_message_id, limit * 3])
+        
         thread_replies = []
+        raw_matches = []
+        user_ids_set = set()
+        
         for record in result:
-            data = _decrypt_supplement(chat, record.get("supplement", ""), int(record.get("user_id", 0)))
-            if data and data.get("threadId") == source_message_id:
-                thread_chat = _make_chat_from_record(chat, record)
-                if thread_chat: thread_replies.append(thread_chat)
-                if len(thread_replies) >= limit: break
+            uid = int(record.get("user_id", 0))
+            if uid: user_ids_set.add(uid)
+            
+            try:
+                data = _decrypt_supplement(chat, record.get("supplement", ""), uid)
+                if data and data.get("threadId") == source_message_id:
+                    raw_matches.append(record)
+                    if len(raw_matches) >= limit: break
+            except: pass
+            
+        user_cache = _fetch_users_batch(chat.api, user_ids_set)
+
+        for record in raw_matches:
+            thread_chat = _make_chat_from_record(chat, record, user_cache)
+            if thread_chat: thread_replies.append(thread_chat)
+            
         return thread_replies
     except: return []
 
 def get_participant_list(chat: ChatContext, limit: int = 50) -> List[Dict[str, Any]]:
-    """스레드 참여자 정보를 상세 딕셔너리 리스트로 반환"""
+    """스레드 참여자 정보를 딕셔너리 리스트로 반환"""
     source = get_thread_source(chat)
     participants = {} 
     
@@ -246,7 +380,7 @@ def is_thread_starter(chat: ChatContext) -> bool:
     return str(source.sender.id) == str(chat.sender.id)
 
 def send_to_thread(chat: ChatContext, message: str, thread_id: Union[str, int] = None) -> bool:
-    """특정 스레드로 메시지 전송"""
+    """특정 스레드로 메시지 전송 (Persistent Session 사용)"""
     if not thread_id:
         tid = get_thread_id(chat)
         if tid: thread_id = tid
@@ -261,12 +395,14 @@ def send_to_thread(chat: ChatContext, message: str, thread_id: Union[str, int] =
         "threadId": str(thread_id) if thread_id else None
     }
     try:
-        res = requests.post(f"{chat.api.iris_endpoint}/reply", json=payload, timeout=5)
+        res = _GLOBAL_SESSION.post(f"{chat.api.iris_endpoint}/reply", json=payload, timeout=5)
         return res.ok
     except: return False
 
 class ThreadParticipant:
     """스레드 참여자 상세 객체"""
+    __slots__ = ('name', 'id', 'msgId', 'msg')
+
     def __init__(self, name: str, id: int, msgId: int, msg: str):
         self.name = name
         self.id = id
@@ -284,6 +420,7 @@ class Thread:
     def __init__(self, chat: ChatContext):
         self._chat = chat
         self._cached_source = None
+        self._cached_id = -1
     
     @property
     def exists(self) -> bool:
@@ -293,7 +430,9 @@ class Thread:
     @property
     def id(self) -> Optional[int]:
         """원본 메시지 ID"""
-        return get_thread_id(self._chat)
+        if self._cached_id == -1:
+            self._cached_id = get_thread_id(self._chat)
+        return self._cached_id
 
     def get_thread_id(self) -> Optional[int]:
         """원본 메시지 ID (메서드)"""
@@ -380,7 +519,7 @@ class Thread:
         return estimate_reply_target(self._chat)
 
     def send(self, message: str, target_id: Union[str, int] = None) -> bool:
-        """이 스레드(타래) 또는 특정 메시지에 답장 전송"""
+        """이 스레드 또는 특정 메시지에 답장 전송"""
         tid = target_id if target_id else self.id
         return send_to_thread(self._chat, message, thread_id=tid)
 
@@ -420,7 +559,7 @@ def estimate_reply_target(chat: ChatContext) -> ChatContext:
     """전역 함수 형태의 답장 대상 추정"""
     source = get_thread_source(chat)
     if not source: return chat
-    names = re.findall(r"@(\S+)", chat.message.msg or "")
+    names = MENTION_PATTERN.findall(chat.message.msg or "")
     if not names: return source
     for reply in reversed(get_thread_messages(chat, source.message.id, limit=30)):
         for name in names:
@@ -428,3 +567,10 @@ def estimate_reply_target(chat: ChatContext) -> ChatContext:
     for name in names:
         if name in source.sender.name: return source
     return source
+
+def _get_thread_lazy(self):
+    if not hasattr(self, "_cached_thread"):
+        self._cached_thread = Thread(self)
+    return self._cached_thread
+
+ChatContext.thread = property(_get_thread_lazy)
