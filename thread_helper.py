@@ -219,18 +219,286 @@ def estimate_reply_target(chat: ChatContext) -> ChatContext:
         if name in source.sender.name: return source
     return source
 
-def send_to_thread(chat: ChatContext, message: str, thread_id: str = None) -> bool:
+def send_to_thread(chat: ChatContext, message: str, thread_id: Union[str, int] = None) -> bool:
     """
     [사용법] send_to_thread(chat, "내용", thread_id="12345")
     특정 스레드(또는 현재 스레드)로 메시지를 전송합니다. 성공 시 True를 반환합니다.
+    thread_id가 주어지면 해당 ID의 메시지에 스레드를 새로 열거나 기존 스레드에 답장합니다.
     """
     if not thread_id and is_reply_or_thread(chat):
         source = get_thread_source(chat)
-        if source: thread_id = str(source.message.id)
-    payload = {"type": "text", "room": str(chat.room.id), "data": message, "threadId": str(thread_id) if thread_id else None}
+        if source:
+            thread_id = source.message.id
+
+    payload = {
+        "type": "text", 
+        "room": str(chat.room.id), 
+        "data": message, 
+        "threadId": str(thread_id) if thread_id else None
+    }
     try:
         res = requests.post(f"{chat.api.iris_endpoint}/reply", json=payload, timeout=5)
         return res.ok
     except: return False
+
+class Participant:
+    """스레드 참여자 객체"""
+    def __init__(self, name: str, user_id: int, msg_id: int, msg: str):
+        self.name = name
+        self.id = user_id
+        self.msg_id = msg_id
+        self.msg = msg
+    
+    def __repr__(self):
+        return f"ThreadUser(name='{self.name}')"
+
+class Channel:
+    """채팅방 객체 [object OpenChannel]"""
+    def __init__(self, chat: ChatContext):
+        self._chat = chat
+        self.id = chat.room.id
+        self.name = chat.room.name
+    
+    def isOpenChannel(self) -> bool:
+        return True
+    
+    def send(self, msg: str):
+        return self._chat.reply(msg)
+    
+    def __repr__(self):
+        return "[object OpenChannel]"
+
+class Author:
+    """발신자 객체 [object User]"""
+    def __init__(self, chat: ChatContext):
+        self._chat = chat
+        self.id = chat.sender.id
+        self.name = chat.sender.name
+        self.type = str(chat.sender.type).upper()
+    
+    def __repr__(self):
+        return f"[object User:{self.name}]"
+
+def get_participant_list(chat: ChatContext, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    [사용법] participants = get_participant_list(chat)
+    스레드 참여자 정보를 딕셔너리 리스트 형식으로 반환합니다.
+    """
+    source = get_thread_source(chat)
+    participants = {} # user_id -> dict
+    
+    def _info(c):
+        return {
+            "name": c.sender.name,
+            "id": c.sender.id,
+            "msgId": c.message.id,
+            "msg": c.message.msg
+        }
+
+    if source:
+        participants[source.sender.id] = _info(source)
+        tid = source.message.id
+    else:
+        tid = get_thread_id(chat)
+        if not tid: return [_info(chat)]
+
+    replies = get_thread_messages(chat, tid, limit=limit)
+    for r in replies:
+        participants[r.sender.id] = _info(r)
+
+    participants[chat.sender.id] = _info(chat)
+    return list(participants.values())
+
+def get_thread_summary(chat: ChatContext) -> Dict[str, Any]:
+    """
+    [사용법] summary = get_thread_summary(chat)
+    스레드의 상태 정보를 딕셔너리 형식으로 반환합니다.
+    """
+    data = get_thread_as_dict(chat)
+    if not data: return {"error": "Not a thread"}
+    
+    m = data['metadata']
+    s = data['source']
+    return {
+        "owner": s['sender']['name'],
+        "msgCount": m['reply_count'] + 1,
+        "participantCount": m['unique_participants']
+    }
+
+def filter_thread_by_user(chat: ChatContext, target_user_id: Union[int, str]) -> List[ChatContext]:
+    """
+    [사용법] user_msgs = filter_thread_by_user(chat, 1234567)
+    스레드 내에서 특정 유저가 보낸 메시지들만 리스트로 반환합니다.
+    """
+    source = get_thread_source(chat)
+    if not source: return [chat] if str(chat.sender.id) == str(target_user_id) else []
+    
+    all_msgs = [source] + get_thread_messages(chat, source.message.id, limit=200)
+    return [m for m in all_msgs if str(m.sender.id) == str(target_user_id)]
+
+def is_thread_starter(chat: ChatContext) -> bool:
+    """
+    [사용법] if is_thread_starter(chat):
+    현재 메시지를 보낸 유저가 이 스레드를 처음 시작한 사람(원본 작성자)인지 여부를 반환합니다.
+    권한 제어나 작성자 강조 기능을 만들 때 유용합니다.
+    """
+    source = get_thread_source(chat)
+    if not source: return False
+    return str(source.sender.id) == str(chat.sender.id)
+
+def get_thread_as_dict(chat: ChatContext, limit: int = 100) -> Optional[Dict[str, Any]]:
+    """
+    [사용법] thread_data = get_thread_as_dict(chat)
+    스레드의 모든 정보를 Dictionary 형태로 반환합니다. 유저의 UUID 정보를 포함합니다.
+    """
+    source = get_thread_source(chat)
+    if not source: return None
+    
+    replies = get_thread_messages(chat, source.message.id, limit=limit)
+    
+    def _user(u):
+        return {"name": u.name, "id": u.id}
+
+    # 시간 차이 계산
+    try:
+        start_ts = int(source.raw.get("created_at", 0))
+        end_ts = int(replies[-1].raw.get("created_at", start_ts)) if replies else start_ts
+        duration = end_ts - start_ts
+    except: duration = 0
+
+    return {
+        "source": {
+            "id": source.message.id,
+            "sender": _user(source.sender),
+            "content": source.message.msg,
+            "timestamp": source.raw.get("created_at")
+        },
+        "replies": [
+            {
+                "id": r.message.id,
+                "sender": _user(r.sender),
+                "content": r.message.msg,
+                "timestamp": r.raw.get("created_at")
+            } for r in replies
+        ],
+        "metadata": {
+            "reply_count": len(replies),
+            "unique_participants": len(set([source.sender.id] + [r.sender.id for r in replies])),
+            "duration_seconds": duration,
+            "room_id": chat.room.id
+        }
+    }
+
+def get_thread_timeline(chat: ChatContext, limit: int = 50) -> List[str]:
+    """
+    [사용법] timeline = get_thread_timeline(chat)
+    스레드 대화를 "[닉네임] 내용" 형태의 깔끔한 문자열 리스트로 반환합니다.
+    Gemini 등의 AI 프롬프트로 대화 맥락을 전달할 때 즉시 활용 가능합니다.
+    """
+    source = get_thread_source(chat)
+    if not source: return []
+    
+    messages = [source] + get_thread_messages(chat, source.message.id, limit=limit)
+    return [f"[{m.sender.name}] {m.message.msg}" for m in messages]
+
+class ThreadParticipant:
+    """스레드 참여자 상세 객체"""
+    def __init__(self, name: str, user_id: int, msg_id: int, msg: str):
+        self.name = name
+        self.id = user_id
+        self.msg_id = msg_id
+        self.msg = msg
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """데이터를 딕셔너리 형태로 반환"""
+        return {
+            "name": self.name,
+            "id": self.id,
+            "msgId": self.msg_id,
+            "msg": self.msg
+        }
+
+    def __repr__(self):
+        return f"ThreadParticipant(name='{self.name}')"
+
+class ThreadAuthor:
+    """스레드 원본/메시지 작성자 객체"""
+    def __init__(self, chat: ChatContext):
+        self._chat = chat
+        self.id = chat.sender.id
+        self.name = chat.sender.name
+        self.type = str(chat.sender.type).upper()
+    
+    def __repr__(self):
+        return f"[object ThreadAuthor:{self.name}]"
+
+class Thread:
+    """
+    [사용법] t = Thread(chat) 또는 chat.thread
+    카카오톡 스레드를 하나의 객체로 다루는 전문 인터페이스입니다.
+    """
+    def __init__(self, chat: ChatContext):
+        self._chat = chat
+        self._cached_source = None
+    
+    @property
+    def exists(self) -> bool:
+        """현재 메시지가 유효한 스레드(답장 타래)에 속해 있는지 확인"""
+        return is_reply_or_thread(self._chat)
+    
+    @property
+    def source(self) -> Optional[ChatContext]:
+        """스레드의 원본(최상위) 메시지 객체"""
+        if not self._cached_source:
+            self._cached_source = get_thread_source(self._chat)
+        return self._cached_source
+
+    @property
+    def author(self) -> Optional[ThreadAuthor]:
+        """스레드를 시작한 작성자 정보"""
+        return ThreadAuthor(self.source) if self.source else None
+
+    @property
+    def participants(self) -> List[ThreadParticipant]:
+        """참여자 리스트를 ThreadParticipant 객체 목록으로 반환"""
+        return [ThreadParticipant(**p) for p in get_participant_list(self._chat)]
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        """스레드 통계 (답장 수, 참여자 수, 진행 시간 등)"""
+        d = get_thread_as_dict(self._chat)
+        return d.get("metadata", {}) if d else {}
+
+    @property
+    def summary(self) -> Dict[str, Any]:
+        """스레드 상태 요약 데이터 (딕셔너리)"""
+        return get_thread_summary(self._chat)
+
+    def send(self, message: str) -> bool:
+        """이 스레드(타래)에 즉시 답장 전송"""
+        tid = self.source.message.id if self.source else get_thread_id(self._chat)
+        return send_to_thread(self._chat, message, thread_id=tid)
+
+    def isOpenChannel(self) -> bool:
+        """오픈채팅 스레드 여부 (JS API 호환성)"""
+        return True
+
+    def __repr__(self):
+        return "[object OpenChannel:Thread]"
+
+# ChatContext에 thread 전문 속성 주입
+ChatContext.thread = property(lambda self: Thread(self))
+
+# 하위 호환성용 별칭
+Channel = Thread
+Author = ThreadAuthor
+Participant = ThreadParticipant
+
+def open_thread(chat: ChatContext, target_msg_id: Union[str, int], message: str) -> bool:
+    """
+    [사용법] open_thread(chat, "원본메시지ID", "전송할내용")
+    특정 메시지에 스레드를 여는 명시적 함수입니다. (내부적으로 send_to_thread 사용)
+    """
+    return send_to_thread(chat, message, thread_id=target_msg_id)
 
 get_source_universal = get_thread_source
