@@ -200,8 +200,8 @@ def get_thread_as_dict(chat: ChatContext, limit: int = 100) -> Optional[Dict[str
         return {"name": u.name, "id": u.id}
 
     try:
-        start_ts = int(source.raw.get("created_at", 0))
-        end_ts = int(replies[-1].raw.get("created_at", start_ts)) if replies else start_ts
+        start_ts = int(source.raw.get("created_at") or 0)
+        end_ts = int(replies[-1].raw.get("created_at") or start_ts) if replies else start_ts
         duration = end_ts - start_ts
     except: duration = 0
 
@@ -236,7 +236,7 @@ def get_thread_timeline(chat: ChatContext, limit: int = 50) -> List[Dict[str, An
     return [{
         "name": m.sender.name, 
         "content": m.message.msg,
-        "time": int(m.raw.get("created_at", 0))
+        "time": int(m.raw.get("created_at") or 0)
     } for m in messages]
 
 def is_thread_starter(chat: ChatContext) -> bool:
@@ -267,14 +267,14 @@ def send_to_thread(chat: ChatContext, message: str, thread_id: Union[str, int] =
 
 class ThreadParticipant:
     """스레드 참여자 상세 객체"""
-    def __init__(self, name: str, user_id: int, msg_id: int, msg: str):
+    def __init__(self, name: str, id: int, msgId: int, msg: str):
         self.name = name
-        self.id = user_id
-        self.msg_id = msg_id
+        self.id = id
+        self.msgId = msgId
         self.msg = msg
     
     def to_dict(self) -> Dict[str, Any]:
-        return {"name": self.name, "id": self.id, "msgId": self.msg_id, "msg": self.msg}
+        return {"name": self.name, "id": self.id, "msgId": self.msgId, "msg": self.msg}
 
     def __repr__(self):
         return f"ThreadParticipant(name='{self.name}')"
@@ -306,6 +306,11 @@ class Thread:
             src = get_thread_source(self._chat)
             self._cached_source = src if src else self._chat
         return self._cached_source
+
+    @property
+    def author(self) -> ChatContext:
+        """스레드 원본 메시지 컨텍스트 (ChatContext)"""
+        return self.source
 
     @property
     def sender(self) -> User:
