@@ -1,6 +1,6 @@
 # Thread Helper 가이드
 
-이 라이브러리는 Iris 라이브러리의 `ChatContext`를 확장하여 카카오톡 댓글(스레드) 대화를 객체지향적으로 관리할 수 있게 돕습니다.
+이 라이브러리는 Iris 라이브러리의 `ChatContext`를 확장하여 카카오톡 스레드(댓글/타래) 대화를 객체지향적으로 관리할 수 있게 돕습니다.
 
 ---
 
@@ -11,7 +11,7 @@
 ### 원본 데이터 접근 (Getter)
 | 속성 경로 | 설명 | 비고 |
 |:---|:---|:---|
-| `chat.thread.sender.name` | 스레드 원본 작성자의 닉네임 | |
+| `chat.thread.sender.name` | 스레드 원본 작성자의 닉네임 | 가장 많이 사용됨 |
 | `chat.thread.message.msg` | 스레드 원본 메시지의 텍스트 내용 | |
 | `chat.thread.id` | 스레드 원본 메시지 ID (숫자) | 일반 메시지일 경우 `None` |
 | `chat.thread.exists` | 현재 메시지가 스레드에 속해 있는지 여부 | `True` / `False` |
@@ -84,6 +84,7 @@
 
 ### @is_thread_reply (데코레이터)
 명령어가 답장(스레드) 내에서 호출되었을 때만 작동하도록 제한합니다. 스레드가 아닐 경우 사용자에게 안내 메시지를 전송하고 실행을 중단합니다.
+
 ---
 
 ## 5. `chat.thread.timeline()`
