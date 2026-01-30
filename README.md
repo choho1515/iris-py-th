@@ -1,6 +1,6 @@
-# Thread Helper Public 가이드
+# Thread Helper 가이드
 
-이 라이브러리는 Iris 라이브러리의 `ChatContext`를 확장하여 카카오톡 댓글(스레드)를 객체지향적으로 관리할 수 있게 돕습니다.
+이 라이브러리는 Iris 라이브러리의 `ChatContext`를 확장하여 카카오톡 댓글(스레드) 대화를 객체지향적으로 관리할 수 있게 돕습니다.
 
 ---
 
@@ -21,7 +21,7 @@
 ### 핵심 동작 (Methods)
 | 메서드 | 설명 | 사용 예시 |
 |:---|:---|:---|
-| `chat.thread.reply(text)` | 현재 스레드에 답장 전송 | `chat.thread.reply("확인했습니다.")` |
+| `chat.thread.send(text, id?)` | 현재 스레드 또는 특정 ID에 전송 | `chat.thread.send("내용", 12345)` |
 | `chat.thread.timeline()` | [ {name:..., content:..., time:...}, ... ] 리스트 생성 | 생성 시간(Unix TS) 포함 |
 | `chat.thread.messages()` | 스레드 내 모든 답장 객체 리스트 조회 | `limit` 인자 사용 가능 |
 | `chat.thread.is_starter` | 현재 발신자가 스레드 시작자인지 확인 | 프로퍼티 (권한 체크용) |
@@ -41,10 +41,9 @@
 - `summary`: (Dict) 스레드 간략 요약.
 
 **주요 메서드 (Methods)**
-- `reply(message: str)`: 현재 스레드에 답장을 전송합니다. (`chat.thread.reply("안녕")`)
-- `send(message: str)`: `reply()`와 동일합니다.
+- `send(message: str, target_id: int=None)`: 현재 스레드 또는 특정 ID의 메시지에 답장을 전송합니다. (`chat.thread.send("내용", 12345)`)
 - `messages(limit: int=50)`: 전체 답장 목록 조회.
-- `timeline(limit: int=50)`: AI 프롬프트 등에 활용하기 좋게 `{"name": "...", "content": "...", "time": 1769780000}` 형태의 딕셔너리 리스트를 반환합니다.
+- `timeline(limit: int=50)`: `{"name": "...", "content": "...", "time": 1769780000}` 형태의 딕셔너리 리스트를 반환합니다.
 - `get_context(limit: int=5)`: 최근 대화 흐름 조회.
 - `filter_by_user(user_id)`: 특정 유저 메시지 필터링.
 - `estimate_reply_target()`: 답장 대상 추정.
@@ -85,10 +84,6 @@
 
 ### @is_thread_reply (데코레이터)
 명령어가 답장(스레드) 내에서 호출되었을 때만 작동하도록 제한합니다. 스레드가 아닐 경우 사용자에게 안내 메시지를 전송하고 실행을 중단합니다.
-
-### open_thread(chat, target_id, text)
-기존 메시지에 강제로 스레드를 열어 첫 번째 답장을 보냅니다.
-
 ---
 
 ## 5. `chat.thread.timeline()`
