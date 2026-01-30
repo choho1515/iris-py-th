@@ -1,85 +1,100 @@
-# Thread Helper Public Documentatio
+# Thread Helper Public 가이드
 
-이 모듈은 Iris 라이브러리를 사용하여 카카오톡의 댓글(스레드) 관리하기 위한 도구와 객체지향 인터페이스를 제공합니다.
-
-## 객체지향 인터페이스
-
-모듈을 임포트하면 `ChatContext`에 `.thread` 속성이 자동으로 추가되어 직관적으로 스레드 기능에 접근할 수 있습니다.
-
-### Thread 클래스
-스레드 자체를 나타내는 핵심 객체입니다.
-
-**속성**
-- `exists`: (bool) 현재 메시지가 유효한 스레드에 속해 있는지 여부.
-- `source`: (ChatContext) 스레드의 원본(최상위) 메시지 객체.
-- `author`: (ThreadAuthor) 스레드를 시작한 원본 작성자 정보.
-- `participants`: (List[ThreadParticipant]) 스레드에 대화를 남긴 모든 참여자 객체 리스트.
-- `stats`: (Dict) 답장 수, 고유 참여자 수 등 스레드 통계 데이터.
-- `summary`: (Dict) 작성자, 메시지 수, 참여자 수를 포함한 요약 딕셔너리.
-
-**메서드**
-- `send(message: str)`: 현재 스레드에 즉시 답장을 전송합니다.
-- `isOpenChannel()`: True를 반환합니다 (JS API 호환성용).
-
-### ThreadAuthor 클래스
-스레드 또는 메시지 작성자를 나타냅니다.
-
-**속성**
-- `id`: (int) 유저 ID.
-- `name`: (str) 닉네임.
-- `type`: (str) 발신자 타입 (HOST, MANAGER, USER 등).
-
-### ThreadParticipant 클래스
-스레드 내의 개별 참여자를 나타냅니다.
-
-**속성**
-- `name`: (str) 닉네임.
-- `id`: (int) 유저 ID.
-- `msgId`: (int) 해당 참여자가 스레드에서 보낸 가장 최근 메시지의 ID.
-- `msg`: (str) 해당 참여자가 스레드에서 보낸 가장 최근 메시지 내용.
-
-**메서드**
-- `to_dict()`: 참여자 데이터를 딕셔너리 형식으로 변환합니다.
+이 라이브러리는 Iris 라이브러리의 `ChatContext`를 확장하여 카카오톡 스레드(댓글/타래) 대화를 객체지향적으로 관리할 수 있게 돕습니다.
 
 ---
 
-## 주요 함수 목록
+## 1. 퀵 레퍼런스 (Quick Reference)
 
-### get_thread_id(chat: ChatContext) -> Optional[int]
-현재 메시지의 부모 스레드 ID를 반환합니다. 스레드가 아닐 경우 None을 반환합니다.
+모듈을 임포트하면 `chat.thread`를 통해 즉시 모든 기능을 사용할 수 있습니다.
 
-### is_reply_or_thread(chat: ChatContext) -> bool
-메시지가 레거시 답장(type 26)이거나 최신 스레드 답장인지 확인합니다.
+### 원본 데이터 접근 (Getter)
+| 속성 경로 | 설명 | 비고 |
+|:---|:---|:---|
+| `chat.thread.sender.name` | 스레드 원본 작성자의 닉네임 | 가장 많이 사용됨 |
+| `chat.thread.message.msg` | 스레드 원본 메시지의 텍스트 내용 | |
+| `chat.thread.id` | 스레드 원본 메시지 ID (숫자) | 일반 메시지일 경우 `None` |
+| `chat.thread.exists` | 현재 메시지가 스레드에 속해 있는지 여부 | `True` / `False` |
+| `chat.thread.room.name` | 원본 메시지가 발생한 채팅방 이름 | |
+| `chat.thread.raw` | 스레드 전체 정보를 구조화한 날것의 데이터(Thread Raw). 스레드의 모든 메타데이터와 답장 목록이 포함됩니다. | 딕셔너리 형태 |
 
-### get_thread_source(chat: ChatContext) -> Optional[ChatContext]
-스레드의 원본 메시지를 ChatContext 객체로 가져옵니다.
+### 핵심 동작 (Methods)
+| 메서드 | 설명 | 사용 예시 |
+|:---|:---|:---|
+| `chat.thread.reply(text)` | 현재 스레드에 답장 전송 | `chat.thread.reply("확인했습니다.")` |
+| `chat.thread.timeline()` | [ {name:..., content:..., time:...}, ... ] 리스트 생성 | 생성 시간(Unix TS) 포함 |
+| `chat.thread.messages()` | 스레드 내 모든 답장 객체 리스트 조회 | `limit` 인자 사용 가능 |
+| `chat.thread.is_starter` | 현재 발신자가 스레드 시작자인지 확인 | 프로퍼티 (권한 체크용) |
 
-### get_thread_messages(chat: ChatContext, source_message_id: int, limit: int = 50) -> List[ChatContext]
-특정 원본 메시지 ID를 기준으로 모든 답장 리스트를 가져옵니다.
+---
 
-### get_thread_participants(chat: ChatContext, limit: int = 50) -> List[User]
-스레드에 참여 중인 User 객체 목록을 반환합니다.
+## 2. 상세 상세 속성 및 메서드
 
-### get_participant_list(chat: ChatContext, limit: int = 50) -> List[Dict[str, Any]]
-참여자 정보를 상세 딕셔너리 리스트로 반환합니다.
+### Thread 객체 (chat.thread)
+스레드 원본 메시지의 컨텍스트를 대변하며, 동시에 관리 도구 역할을 수행합니다. 스레드가 아닐 경우 현재 메시지를 원본으로 간주하여 에러를 방지합니다.
 
-### get_thread_summary(chat: ChatContext) -> Dict[str, Any]
-스레드 상태(작성자, 메시지 수 등)를 요약한 딕셔너리를 반환합니다.
+- **데이터 프록시**: `sender`, `message`, `room`, `api` 속성은 원본 메시지의 정보를 직접 가리킵니다.
+- `raw`: (Dict) 스레드 전체 정보를 구조화한 날것의 데이터(Thread Raw). 스레드의 모든 메타데이터와 답장 목록이 포함됩니다.
+- `participants`: (List[ThreadParticipant]) 참여자 리스트.
+- `is_starter`: (bool) 본인이 원본 작성자인지 확인.
+- `stats`: (Dict) 스레드 상세 통계.
+- `summary`: (Dict) 스레드 간략 요약.
 
-### filter_thread_by_user(chat: ChatContext, target_user_id: Union[int, str]) -> List[ChatContext]
-스레드 내에서 특정 유저가 보낸 메시지만 필터링하여 반환합니다.
+**주요 메서드 (Methods)**
+- `reply(message: str)`: 현재 스레드에 답장을 전송합니다. (`chat.thread.reply("안녕")`)
+- `send(message: str)`: `reply()`와 동일합니다.
+- `messages(limit: int=50)`: 전체 답장 목록 조회.
+- `timeline(limit: int=50)`: AI 프롬프트 등에 활용하기 좋게 `{"name": "...", "content": "...", "time": 1769780000}` 형태의 딕셔너리 리스트를 반환합니다.
+- `get_context(limit: int=5)`: 최근 대화 흐름 조회.
+- `filter_by_user(user_id)`: 특정 유저 메시지 필터링.
+- `estimate_reply_target()`: 답장 대상 추정.
+- `isOpenChannel()`: 오픈채팅 스레드 여부 확인.
 
-### get_thread_as_dict(chat: ChatContext, limit: int = 100) -> Optional[Dict[str, Any]]
-스레드 전체 구조를 분석용 딕셔너리 형태로 변환합니다.
+### ThreadParticipant 객체
+참여자 목록(`chat.thread.participants`)에 들어있는 개별 요소입니다.
+- `name`, `id`: 참여자 닉네임 및 ID
+- `msg`, `msgId`: 해당 참여자가 남긴 마지막 메시지 및 ID
+- `to_dict()`: 딕셔너리 형태로 변환
 
-### get_thread_timeline(chat: ChatContext, limit: int = 50) -> List[str]
-"[닉네임] 내용" 형식으로 정렬된 대화 타임라인 리스트를 반환합니다.
+---
 
-### send_to_thread(chat: ChatContext, message: str, thread_id: Union[str, int] = None) -> bool
-특정 스레드에 메시지를 전송합니다. ID가 없으면 현재 컨텍스트의 스레드를 대상으로 합니다.
+## 3. 데이터 출력 예시 (Expected Output)
 
-### open_thread(chat: ChatContext, target_msg_id: Union[str, int], message: str) -> bool
-특정 메시지 ID에 대해 명시적으로 스레드를 생성하거나 참여합니다.
+### `chat.thread.summary`
+```json
+{
+    "owner": "홍길동",
+    "msgCount": 5,
+    "participantCount": 3
+}
+```
 
-### is_thread_reply (데코레이터)
-명령어가 스레드 내에서 호출되었을 때만 작동하도록 제한하는 데코레이터입니다.
+### `chat.thread.stats`
+```json
+{
+    "reply_count": 4,
+    "unique_participants": 3,
+    "duration_seconds": 120,
+    "room_id": 123456789
+}
+```
+
+---
+
+## 4. 유틸리티
+
+### @is_thread_reply (데코레이터)
+명령어가 답장(스레드) 내에서 호출되었을 때만 작동하도록 제한합니다. 스레드가 아닐 경우 사용자에게 안내 메시지를 전송하고 실행을 중단합니다.
+
+### open_thread(chat, target_id, text)
+기존 메시지에 강제로 스레드를 열어 첫 번째 답장을 보냅니다.
+
+---
+
+## 5. `chat.thread.timeline()`
+```json
+[
+    { "name": "홍길동", "content": "이것은 원본입니다.", "time": 1769780000 },
+    { "name": "이몽룡", "content": "첫 번째 답장입니다.", "time": 1769780010 }
+]
+```
